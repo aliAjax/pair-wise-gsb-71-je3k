@@ -4,6 +4,8 @@ import { Message } from '@arco-design/web-vue'
 import { useQuery } from '@tanstack/vue-query'
 import { getBaselines, getRuns } from '@/api/http'
 import StatusTag from '@/components/StatusTag.vue'
+import { isIgnoredDisposition, kindLabels } from '@/utils/regions'
+import type { RegionDisposition, ScreenshotRun } from '@/types'
 
 const dateRange = ref('last-7-days')
 const { data: runs } = useQuery({ queryKey: ['runs', 'reports'], queryFn: () => getRuns() })
@@ -16,11 +18,27 @@ const summary = computed(() => ({
   baselines: baselines.value?.length ?? 0,
 }))
 
+const reviewRegions = (run: ScreenshotRun) => run.review?.regions ?? []
+
+const dispositionCount = (run: ScreenshotRun, disposition: RegionDisposition) =>
+  reviewRegions(run).filter((region) => region.disposition === disposition).length
+
+const ignoredDetail = (run: ScreenshotRun) =>
+  reviewRegions(run)
+    .filter((region) => isIgnoredDisposition(region.disposition))
+    .map(
+      (region) =>
+        `${region.severity} ${kindLabels[region.kind]} 区域${region.x}%,${region.y}% ${
+          region.disposition === 'ignored-rule' ? `规则:${region.ruleName ?? region.ruleId}` : '手动忽略'
+        }`,
+    )
+    .join('；')
+
 const escapeCsv = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`
 
 const exportCsv = () => {
   const rows = [
-    ['运行ID', '页面', '设备', '主题', '构建', '状态', '差异率', '差异区域', '审批人', '审批原因'],
+    ['运行ID', '页面', '设备', '主题', '构建', '状态', '差异率', '差异区域', '采用区域', '忽略区域', '忽略明细', '审批人', '审批原因'],
     ...(runs.value ?? []).map((run) => [
       run.id,
       run.page,
@@ -30,6 +48,9 @@ const exportCsv = () => {
       run.status,
       run.mismatchRate.toFixed(2),
       run.regions.length,
+      dispositionCount(run, 'adopted'),
+      dispositionCount(run, 'ignored-rule') + dispositionCount(run, 'ignored-manual'),
+      ignoredDetail(run),
       run.review?.reviewer ?? '',
       run.review?.reason ?? '',
     ]),
@@ -89,6 +110,11 @@ const exportCsv = () => {
             <div v-if="record.review" class="evidence-cell">
               <strong>{{ record.review.reviewer }} · {{ record.review.reviewedAt.slice(0, 10) }}</strong>
               <span>{{ record.review.reason }}</span>
+              <span v-if="record.review.regions?.length">
+                区域处置：采用 {{ dispositionCount(record, 'adopted') }} · 规则忽略
+                {{ dispositionCount(record, 'ignored-rule') }} · 手动忽略
+                {{ dispositionCount(record, 'ignored-manual') }}
+              </span>
             </div>
             <span v-else class="muted">尚未审批</span>
           </template>

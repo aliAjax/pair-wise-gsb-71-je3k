@@ -1,5 +1,12 @@
 import axios, { type AxiosAdapter, type InternalAxiosRequestConfig } from 'axios'
 import { readDb, writeDb } from '@/mocks/db'
+import {
+  applyEnabledRules,
+  describeRegion,
+  isIgnoredDisposition,
+  toReviewedRegion,
+  unresolvedHighRegions,
+} from '@/utils/regions'
 import type {
   Baseline,
   DashboardData,
@@ -93,10 +100,42 @@ const mockAdapter: AxiosAdapter = async (config) => {
     const payload = parseBody<ReviewPayload>(config)
     const run = db.runs.find((item) => item.id === reviewMatch[1])
     if (!run) throw new Error('运行记录不存在')
+
+    // 以服务端的区域为准，只合并评审页提交的处置结果，随后套用启用规则
+    const submitted = new Map((payload.regions ?? []).map((region) => [region.id, region]))
+    let regions = run.regions.map((region) => {
+      const patch = submitted.get(region.id)
+      return patch
+        ? { ...region, disposition: patch.disposition, ruleId: patch.ruleId ?? region.ruleId }
+        : region
+    })
+    regions = applyEnabledRules(regions, db.rules, run)
+
+    if (payload.decision === 'approved') {
+      const blocking = unresolvedHighRegions(regions)
+      if (blocking.length > 0) {
+        throw new Error(
+          `仍有 ${blocking.length} 处高风险区域未处理：${blocking
+            .map(describeRegion)
+            .join('；')}。请先逐处采用或忽略，再批准为新基线。`,
+        )
+      }
+      // 批准时，其余未判定的中低风险区域默认采用进新基线
+      regions = regions.map((region) =>
+        region.disposition === 'pending' ? { ...region, disposition: 'adopted' } : region,
+      )
+    }
+
+    run.regions = regions
     run.status = payload.decision
+    const snapshots = regions.map((region) => toReviewedRegion(region, db.rules))
     run.review = {
-      ...payload,
+      category: payload.category,
+      decision: payload.decision,
+      reviewer: payload.reviewer,
+      reason: payload.reason,
       reviewedAt: new Date().toISOString(),
+      regions: snapshots,
     }
     if (payload.decision === 'approved') {
       const baseline = db.baselines.find(
@@ -120,6 +159,8 @@ const mockAdapter: AxiosAdapter = async (config) => {
         approvedAt: new Date().toISOString(),
         runId: run.id,
         active: true,
+        adoptedRegions: snapshots.filter((region) => region.disposition === 'adopted'),
+        ignoredRegions: snapshots.filter((region) => isIgnoredDisposition(region.disposition)),
       })
     }
     writeDb(db)
@@ -180,7 +221,7 @@ const mockAdapter: AxiosAdapter = async (config) => {
             severity,
             pixels: Math.round(file.size / 8 || 620),
             kind: 'layout',
-            ignored: false,
+            disposition: 'pending',
           },
           {
             id: `${runId}-r2`,
@@ -191,7 +232,7 @@ const mockAdapter: AxiosAdapter = async (config) => {
             severity: severity === 'high' ? 'medium' : 'low',
             pixels: Math.round(file.size / 18 || 180),
             kind: 'color',
-            ignored: false,
+            disposition: 'pending',
           },
         ],
       }

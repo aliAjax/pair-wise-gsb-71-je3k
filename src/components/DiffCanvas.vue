@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { DifferenceRegion, ScreenshotRun } from '@/types'
+import { dispositionLabels, isIgnoredDisposition } from '@/utils/regions'
 import { makeScreenshot } from '@/utils/visual'
 
 const props = defineProps<{
@@ -30,14 +31,20 @@ const image = computed(() => {
             v-for="region in regions"
             :key="region.id"
             class="diff-region"
-            :class="[region.severity, { ignored: region.ignored }]"
+            :class="[
+              region.severity,
+              {
+                ignored: isIgnoredDisposition(region.disposition),
+                adopted: region.disposition === 'adopted',
+              },
+            ]"
             :style="{
               left: `${region.x}%`,
               top: `${region.y}%`,
               width: `${region.width}%`,
               height: `${region.height}%`,
             }"
-            :title="`${region.kind} · ${region.pixels} 像素差异`"
+            :title="`${region.kind} · ${region.pixels} 像素差异 · ${dispositionLabels[region.disposition]}`"
           >
             <span>{{ region.severity.toUpperCase() }}</span>
           </button>

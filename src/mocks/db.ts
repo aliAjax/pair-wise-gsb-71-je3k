@@ -1,4 +1,4 @@
-import type { Baseline, DifferenceRegion, IgnoreRule, Project, ScreenshotRun } from '@/types'
+import type { Baseline, DifferenceRegion, IgnoreRule, Project, ReviewedRegion, ScreenshotRun } from '@/types'
 
 const STORAGE_KEY = 'visual-regression-platform-v1'
 
@@ -25,7 +25,7 @@ const makeRegions = (prefix: string, intensity: number): DifferenceRegion[] => [
     severity: 'high',
     pixels: Math.round(1840 * intensity),
     kind: 'layout',
-    ignored: false,
+    disposition: 'pending',
   },
   {
     id: `${prefix}-r2`,
@@ -36,7 +36,7 @@ const makeRegions = (prefix: string, intensity: number): DifferenceRegion[] => [
     severity: 'medium',
     pixels: Math.round(720 * intensity),
     kind: 'color',
-    ignored: false,
+    disposition: 'pending',
   },
   {
     id: `${prefix}-r3`,
@@ -47,10 +47,22 @@ const makeRegions = (prefix: string, intensity: number): DifferenceRegion[] => [
     severity: 'low',
     pixels: Math.round(216 * intensity),
     kind: 'environment',
-    ignored: true,
+    disposition: 'ignored-rule',
     ruleId: 'rule-time',
   },
 ]
+
+const traceRegion = (
+  id: string,
+  severity: ReviewedRegion['severity'],
+  kind: ReviewedRegion['kind'],
+  x: number,
+  y: number,
+  pixels: number,
+  disposition: ReviewedRegion['disposition'],
+  ruleId?: string,
+  ruleName?: string,
+): ReviewedRegion => ({ id, severity, kind, x, y, pixels, disposition, ruleId, ruleName })
 
 const runs: ScreenshotRun[] = [
   {
@@ -96,13 +108,20 @@ const runs: ScreenshotRun[] = [
     capturedAt: '2026-09-28T17:20:00+08:00',
     baselineVersion: 'v5.9.1-baseline',
     currentVersion: 'billing-v3.7',
-    regions: makeRegions('1046', 1.4),
+    regions: makeRegions('1046', 1.4).map((region, index) =>
+      index < 2 ? { ...region, disposition: 'adopted' as const } : region,
+    ),
     review: {
       category: 'design-change',
       decision: 'approved',
       reviewer: '林默',
       reason: '新计费周期列按需求上线，已核对设计稿和验收单。',
       reviewedAt: '2026-09-28T18:02:00+08:00',
+      regions: [
+        traceRegion('1046-r1', 'high', 'layout', 11, 18, 2576, 'adopted'),
+        traceRegion('1046-r2', 'medium', 'color', 54, 34, 1008, 'adopted'),
+        traceRegion('1046-r3', 'low', 'environment', 72, 71, 302, 'ignored-rule', 'rule-time', '动态时间区域'),
+      ],
     },
   },
   {
@@ -125,6 +144,11 @@ const runs: ScreenshotRun[] = [
       reviewer: '梁琪',
       reason: '主操作区被侧栏遮挡，属于阻断性渲染异常。',
       reviewedAt: '2026-09-28T15:44:00+08:00',
+      regions: [
+        traceRegion('1045-r1', 'high', 'layout', 11, 18, 4048, 'pending'),
+        traceRegion('1045-r2', 'medium', 'color', 54, 34, 1584, 'pending'),
+        traceRegion('1045-r3', 'low', 'environment', 72, 71, 475, 'ignored-rule', 'rule-time', '动态时间区域'),
+      ],
     },
   },
   {
@@ -172,6 +196,13 @@ const baselines: Baseline[] = [
     approvedAt: '2026-09-19T11:30:00+08:00',
     runId: 'run-998',
     active: true,
+    adoptedRegions: [
+      traceRegion('998-r1', 'high', 'layout', 14, 22, 2130, 'adopted'),
+      traceRegion('998-r2', 'medium', 'content', 48, 40, 860, 'adopted'),
+    ],
+    ignoredRegions: [
+      traceRegion('998-r3', 'low', 'environment', 70, 68, 240, 'ignored-rule', 'rule-time', '动态时间区域'),
+    ],
   },
   {
     id: 'base-console-billing',
@@ -185,6 +216,10 @@ const baselines: Baseline[] = [
     approvedAt: '2026-09-12T14:05:00+08:00',
     runId: 'run-961',
     active: true,
+    adoptedRegions: [traceRegion('961-r1', 'medium', 'color', 30, 26, 1180, 'adopted')],
+    ignoredRegions: [
+      traceRegion('961-r2', 'low', 'environment', 66, 74, 180, 'ignored-rule', 'rule-watermark', '测试环境水印'),
+    ],
   },
   {
     id: 'base-growth-campaign',
@@ -198,6 +233,8 @@ const baselines: Baseline[] = [
     approvedAt: '2026-08-28T10:10:00+08:00',
     runId: 'run-902',
     active: false,
+    adoptedRegions: [],
+    ignoredRegions: [],
   },
   {
     id: 'base-commerce-list',
@@ -211,6 +248,10 @@ const baselines: Baseline[] = [
     approvedAt: '2026-09-20T16:40:00+08:00',
     runId: 'run-1002',
     active: true,
+    adoptedRegions: [traceRegion('1002-r1', 'medium', 'content', 22, 30, 940, 'adopted')],
+    ignoredRegions: [
+      traceRegion('1002-r2', 'low', 'environment', 75, 70, 150, 'ignored-manual'),
+    ],
   },
 ]
 
@@ -263,6 +304,32 @@ const rules: IgnoreRule[] = [
 
 const seed = (): Database => ({ projects, runs, baselines, rules })
 
+type LegacyRegion = DifferenceRegion & { ignored?: boolean }
+
+/** 兼容旧版本地存储：ignored 布尔值迁移为 disposition，审批记录和基线补齐区域追溯字段。 */
+const normalize = (db: Database): Database => {
+  db.runs.forEach((run) => {
+    run.regions = run.regions.map((region) => {
+      const legacy = region as LegacyRegion
+      if (!legacy.disposition) {
+        legacy.disposition = legacy.ignored
+          ? legacy.ruleId
+            ? 'ignored-rule'
+            : 'ignored-manual'
+          : 'pending'
+      }
+      delete legacy.ignored
+      return legacy
+    })
+    if (run.review && !run.review.regions) run.review.regions = []
+  })
+  db.baselines.forEach((baseline) => {
+    baseline.adoptedRegions ??= []
+    baseline.ignoredRegions ??= []
+  })
+  return db
+}
+
 export const readDb = (): Database => {
   const raw = localStorage.getItem(STORAGE_KEY)
   if (!raw) {
@@ -271,7 +338,7 @@ export const readDb = (): Database => {
     return initial
   }
   try {
-    return JSON.parse(raw) as Database
+    return normalize(JSON.parse(raw) as Database)
   } catch {
     const initial = seed()
     localStorage.setItem(STORAGE_KEY, JSON.stringify(initial))

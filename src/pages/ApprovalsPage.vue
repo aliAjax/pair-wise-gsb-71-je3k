@@ -24,8 +24,11 @@ const mergeMutation = useMutation({
   onError: (error: Error) => Message.error(error.message),
 })
 
-const unignoredCount = (run: ScreenshotRun) =>
-  run.regions.filter((region) => !region.ignored).length
+const pendingCount = (run: ScreenshotRun) =>
+  run.regions.filter((region) => region.disposition === 'pending').length
+
+const hasPendingHigh = (run: ScreenshotRun) =>
+  run.regions.some((region) => region.severity === 'high' && region.disposition === 'pending')
 </script>
 
 <template>
@@ -89,7 +92,11 @@ const unignoredCount = (run: ScreenshotRun) =>
           </template>
         </a-table-column>
         <a-table-column title="差异区域" :width="150">
-          <template #cell="{ record }">{{ unignoredCount(record) }} 处待判定</template>
+          <template #cell="{ record }">
+            <span :class="{ danger: hasPendingHigh(record) }">
+              {{ pendingCount(record) }} 处待判定<template v-if="hasPendingHigh(record)">（含高风险）</template>
+            </span>
+          </template>
         </a-table-column>
         <a-table-column title="构建" data-index="build" :width="180" />
         <a-table-column title="提交时间" :width="150">

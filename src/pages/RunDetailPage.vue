@@ -5,9 +5,18 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { Message } from '@arco-design/web-vue'
 import DiffCanvas from '@/components/DiffCanvas.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { getRun, reviewRun } from '@/api/http'
+import { getRun, getRules, reviewRun } from '@/api/http'
 import { useReviewStore } from '@/stores/review'
-import type { DifferenceRegion, ReviewCategory } from '@/types'
+import {
+  applyEnabledRules,
+  describeRegion,
+  dispositionLabels,
+  findEnabledRule,
+  isIgnoredDisposition,
+  kindLabels,
+  unresolvedHighRegions,
+} from '@/utils/regions'
+import type { DifferenceRegion, RegionDisposition, ReviewCategory, ReviewPayload } from '@/types'
 
 interface ReviewForm {
   category: ReviewCategory
@@ -34,11 +43,18 @@ const { data: run, isLoading } = useQuery({
   queryKey: computed(() => ['run', runId.value]),
   queryFn: () => getRun(runId.value),
 })
+const { data: rules } = useQuery({ queryKey: ['rules'], queryFn: getRules })
 
 watch(
-  run,
-  (value) => {
-    if (value) localRegions.value = value.regions.map((region) => ({ ...region }))
+  [run, rules],
+  ([value, ruleList]) => {
+    if (!value) return
+    // 命中启用规则的区域进入评审页即自动归为规则忽略
+    localRegions.value = applyEnabledRules(
+      value.regions.map((region) => ({ ...region })),
+      ruleList ?? [],
+      value,
+    )
     reviewStore.setDifferenceFilter('all')
   },
   { immediate: true },
@@ -51,16 +67,41 @@ const visibleRegions = computed(() =>
   ),
 )
 
+const countByDisposition = (disposition: RegionDisposition) =>
+  localRegions.value.filter((region) => region.disposition === disposition).length
+
+const pendingCount = computed(() => countByDisposition('pending'))
+const adoptedCount = computed(() => countByDisposition('adopted'))
+const ruleIgnoredCount = computed(() => countByDisposition('ignored-rule'))
+const manualIgnoredCount = computed(() => countByDisposition('ignored-manual'))
+
 const suspiciousPixels = computed(() =>
   localRegions.value
-    .filter((region) => !region.ignored)
+    .filter((region) => !isIgnoredDisposition(region.disposition))
     .reduce((total, region) => total + region.pixels, 0),
 )
 
+const blockingHigh = computed(() => unresolvedHighRegions(localRegions.value))
+const blockingIds = computed(() => new Set(blockingHigh.value.map((region) => region.id)))
+
+const reviewRegions = computed(() => run.value?.review?.regions ?? [])
+const reviewRegionCount = (disposition: RegionDisposition) =>
+  reviewRegions.value.filter((region) => region.disposition === disposition).length
+const ignoredReviewRegions = computed(() =>
+  reviewRegions.value.filter((region) => isIgnoredDisposition(region.disposition)),
+)
+
+const ruleNameOf = (ruleId?: string) =>
+  rules.value?.find((rule) => rule.id === ruleId)?.name ?? ruleId ?? '未知规则'
+
 const reviewMutation = useMutation({
-  mutationFn: (payload: ReviewForm) => reviewRun(runId.value, payload),
+  mutationFn: (payload: ReviewPayload) => reviewRun(runId.value, payload),
   onSuccess: async (updated) => {
-    Message.success(updated.review?.decision === 'approved' ? '审批通过，新基线已留痕' : '已驳回归并保留原基线')
+    Message.success(
+      updated.review?.decision === 'approved'
+        ? '审批通过，采用与忽略的区域已随新基线留痕'
+        : '已驳回，原基线保持不变',
+    )
     await queryClient.invalidateQueries({ queryKey: ['run', runId.value] })
     await queryClient.invalidateQueries({ queryKey: ['runs'] })
     await queryClient.invalidateQueries({ queryKey: ['baselines'] })
@@ -70,9 +111,18 @@ const reviewMutation = useMutation({
   onError: (error: Error) => Message.error(error.message),
 })
 
-const toggleIgnored = (target: DifferenceRegion) => {
+const setDisposition = (target: DifferenceRegion, disposition: RegionDisposition) => {
   const region = localRegions.value.find((item) => item.id === target.id)
-  if (region) region.ignored = !region.ignored
+  if (region) region.disposition = disposition
+}
+
+const ignoreRegion = (target: DifferenceRegion) => {
+  if (!run.value) return
+  const region = localRegions.value.find((item) => item.id === target.id)
+  if (!region) return
+  region.disposition = findEnabledRule(region, rules.value ?? [], run.value)
+    ? 'ignored-rule'
+    : 'ignored-manual'
 }
 
 const handleDifferenceFilter = (value: string | number | boolean) => {
@@ -87,7 +137,19 @@ const submitReview = () => {
     Message.warning('请填写审批原因')
     return
   }
-  reviewMutation.mutate({ ...form })
+  if (form.decision === 'approved' && blockingHigh.value.length > 0) {
+    reviewStore.setDifferenceFilter('high')
+    Message.error(
+      `仍有 ${blockingHigh.value.length} 处高风险区域未处理：${blockingHigh.value
+        .map(describeRegion)
+        .join('；')}`,
+    )
+    return
+  }
+  reviewMutation.mutate({
+    ...form,
+    regions: localRegions.value.map(({ id, disposition, ruleId }) => ({ id, disposition, ruleId })),
+  })
 }
 </script>
 
@@ -155,23 +217,51 @@ const submitReview = () => {
               <h3>差异区域</h3>
               <span>已按当前筛选展示 {{ visibleRegions.length }} 处</span>
             </div>
-            <a-tag color="red">{{ localRegions.filter((item) => !item.ignored).length }} 待判定</a-tag>
+            <a-tag :color="pendingCount > 0 ? 'red' : 'green'">{{ pendingCount }} 待判定</a-tag>
+          </div>
+          <div class="region-summary">
+            <span>已采用 {{ adoptedCount }}</span>
+            <span>规则忽略 {{ ruleIgnoredCount }}</span>
+            <span>手动忽略 {{ manualIgnoredCount }}</span>
           </div>
           <div class="region-list">
-            <button
+            <div
               v-for="region in visibleRegions"
               :key="region.id"
               class="region-item"
-              :class="{ ignored: region.ignored }"
-              @click="toggleIgnored(region)"
+              :class="[
+                region.disposition,
+                { blocking: form.decision === 'approved' && blockingIds.has(region.id) },
+              ]"
             >
               <span class="region-severity" :class="region.severity">{{ region.severity.toUpperCase() }}</span>
               <span class="region-copy">
-                <strong>{{ region.kind === 'layout' ? '布局位移' : region.kind === 'color' ? '色彩变化' : region.kind === 'content' ? '内容变更' : '环境噪声' }}</strong>
+                <strong>{{ kindLabels[region.kind] }}</strong>
                 <small>区域 {{ region.x }}%, {{ region.y }}% · {{ region.pixels.toLocaleString() }} px</small>
+                <small v-if="region.disposition === 'ignored-rule'" class="region-rule">
+                  命中启用规则：{{ ruleNameOf(region.ruleId) }}
+                </small>
               </span>
-              <span class="ignore-action">{{ region.ignored ? '恢复' : '忽略' }}</span>
-            </button>
+              <span class="region-side">
+                <em class="disposition-tag" :class="region.disposition">
+                  {{ dispositionLabels[region.disposition] }}
+                </em>
+                <span class="region-actions">
+                  <template v-if="region.disposition === 'pending'">
+                    <button type="button" @click="setDisposition(region, 'adopted')">采用</button>
+                    <button type="button" @click="ignoreRegion(region)">忽略</button>
+                  </template>
+                  <template v-else-if="region.disposition === 'adopted'">
+                    <button type="button" @click="ignoreRegion(region)">忽略</button>
+                    <button type="button" @click="setDisposition(region, 'pending')">撤销</button>
+                  </template>
+                  <template v-else>
+                    <button type="button" @click="setDisposition(region, 'adopted')">采用</button>
+                    <button type="button" @click="setDisposition(region, 'pending')">撤销</button>
+                  </template>
+                </span>
+              </span>
+            </div>
           </div>
 
           <a-divider />
@@ -179,7 +269,7 @@ const submitReview = () => {
           <div class="panel-title">
             <div>
               <h3>评审结论</h3>
-              <span>原因、批准人和新版基线会永久留痕</span>
+              <span>原因、批准人、区域处置和新版基线会永久留痕</span>
             </div>
           </div>
           <a-form :model="form" layout="vertical" @submit-success="submitReview">
@@ -225,8 +315,21 @@ const submitReview = () => {
                 placeholder="说明业务需求、设计稿或异常依据"
               />
             </a-form-item>
-            <a-alert v-if="form.decision === 'approved'" type="warning" style="margin-bottom: 16px">
-              批准后只会新增基线版本，原基线仍可追溯，不会被覆盖。
+            <a-alert
+              v-if="form.decision === 'approved' && blockingHigh.length > 0"
+              type="error"
+              style="margin-bottom: 16px"
+            >
+              <template #title>还有 {{ blockingHigh.length }} 处高风险区域未处理，无法批准</template>
+              <p v-for="region in blockingHigh" :key="region.id" class="blocking-line">
+                {{ describeRegion(region) }} · {{ region.pixels.toLocaleString() }} px
+              </p>
+            </a-alert>
+            <a-alert v-else-if="form.decision === 'approved'" type="warning" style="margin-bottom: 16px">
+              批准后只会新增基线版本，采用与忽略的区域随基线留痕，原基线仍可追溯；未判定的中低风险区域将默认采用。
+            </a-alert>
+            <a-alert v-else type="info" style="margin-bottom: 16px">
+              驳回不会改动任何基线，当前有效基线保持不变，区域处置仅作为评审记录保存。
             </a-alert>
             <a-button html-type="submit" type="primary" long :loading="reviewMutation.isPending.value">
               确认{{ form.decision === 'approved' ? '批准并创建基线' : '驳回' }}
@@ -240,8 +343,25 @@ const submitReview = () => {
               <dt>类型</dt><dd>{{ run.review.category }}</dd>
               <dt>人员</dt><dd>{{ run.review.reviewer }}</dd>
               <dt>时间</dt><dd>{{ run.review.reviewedAt.slice(0, 16).replace('T', ' ') }}</dd>
+              <dt v-if="reviewRegions.length">区域</dt>
+              <dd v-if="reviewRegions.length">
+                采用 {{ reviewRegionCount('adopted') }} · 规则忽略 {{ reviewRegionCount('ignored-rule') }} ·
+                手动忽略 {{ reviewRegionCount('ignored-manual') }}
+                <template v-if="reviewRegionCount('pending')">
+                  · 未判定 {{ reviewRegionCount('pending') }}
+                </template>
+              </dd>
             </dl>
             <p>{{ run.review.reason }}</p>
+            <ul v-if="ignoredReviewRegions.length" class="review-region-list">
+              <li v-for="region in ignoredReviewRegions" :key="region.id">
+                <span class="region-severity" :class="region.severity">{{ region.severity.toUpperCase() }}</span>
+                <span>{{ kindLabels[region.kind] }} · 区域 {{ region.x }}%, {{ region.y }}%</span>
+                <em>
+                  {{ region.disposition === 'ignored-rule' ? `规则忽略：${region.ruleName ?? region.ruleId}` : '手动忽略' }}
+                </em>
+              </li>
+            </ul>
           </div>
         </aside>
       </div>
