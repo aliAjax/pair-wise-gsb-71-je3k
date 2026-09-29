@@ -26,6 +26,16 @@ const mergeMutation = useMutation({
 
 const unignoredCount = (run: ScreenshotRun) =>
   run.regions.filter((region) => !region.ignored).length
+
+const unresolvedHighRisk = (run: ScreenshotRun) =>
+  run.regions.filter((region) => region.severity === 'high' && !region.ignored)
+
+const highRiskTip = (run: ScreenshotRun) => {
+  const blockers = unresolvedHighRisk(run)
+    .map((region) => `${region.kind}（${region.x}%, ${region.y}%）`)
+    .join('、')
+  return `${unresolvedHighRisk(run).length} 处高风险区域未处理，无法批准：${blockers}`
+}
 </script>
 
 <template>
@@ -88,8 +98,15 @@ const unignoredCount = (run: ScreenshotRun) =>
             </a-tag>
           </template>
         </a-table-column>
-        <a-table-column title="差异区域" :width="150">
-          <template #cell="{ record }">{{ unignoredCount(record) }} 处待判定</template>
+        <a-table-column title="差异区域" :width="190">
+          <template #cell="{ record }">
+            <a-space :size="6" wrap>
+              <span>{{ unignoredCount(record) }} 处待判定</span>
+              <a-tooltip v-if="unresolvedHighRisk(record).length" :content="highRiskTip(record)">
+                <a-tag color="red" size="small">{{ unresolvedHighRisk(record).length }} 处高风险阻断</a-tag>
+              </a-tooltip>
+            </a-space>
+          </template>
         </a-table-column>
         <a-table-column title="构建" data-index="build" :width="180" />
         <a-table-column title="提交时间" :width="150">

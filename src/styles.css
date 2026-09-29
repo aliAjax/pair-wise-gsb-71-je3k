@@ -646,6 +646,68 @@ code {
   opacity: 0.55;
 }
 
+.region-item.locked {
+  cursor: not-allowed;
+}
+
+.ignore-reason {
+  margin-top: 2px;
+  color: #ff7d00;
+}
+
+.trace-block {
+  margin-top: 12px;
+}
+
+.trace-block h5,
+.trace-heading {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #4e5969;
+}
+
+.trace-heading {
+  margin-top: 18px;
+}
+
+.region-trace {
+  display: grid;
+  gap: 8px;
+}
+
+.trace-item {
+  display: grid;
+  grid-template-columns: 42px 1fr;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #f2f3f5;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.trace-copy strong,
+.trace-copy small {
+  display: block;
+}
+
+.trace-copy strong {
+  margin-bottom: 2px;
+  font-size: 12px;
+}
+
+.trace-copy small {
+  color: #86909c;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.trace-empty {
+  margin: 0;
+  padding: 8px 10px;
+  color: #c9cdd4;
+  font-size: 11px;
+}
+
 .region-severity {
   color: #f53f3f;
   font-size: 10px;

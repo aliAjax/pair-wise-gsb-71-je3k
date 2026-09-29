@@ -1,6 +1,23 @@
 export type ReviewCategory = 'design-change' | 'render-error' | 'environment-noise'
 export type RunStatus = 'pending' | 'approved' | 'rejected' | 'merged'
 export type Severity = 'high' | 'medium' | 'low'
+export type IgnoreSource = 'manual' | 'rule'
+
+export interface RegionSnapshot {
+  regionId: string
+  kind: 'layout' | 'content' | 'color' | 'environment'
+  severity: Severity
+  x: number
+  y: number
+  width: number
+  height: number
+  pixels: number
+  adopted: boolean
+  ignoredBy?: IgnoreSource
+  ruleId?: string
+  ruleName?: string
+  ignoredReason?: string
+}
 
 export interface Project {
   id: string
@@ -21,6 +38,11 @@ export interface DifferenceRegion {
   kind: 'layout' | 'content' | 'color' | 'environment'
   ignored: boolean
   ruleId?: string
+  selector?: string
+  delta?: number
+  ignoredBy?: IgnoreSource
+  ignoredReason?: string
+  ignoredAt?: string
 }
 
 export interface ReviewRecord {
@@ -29,6 +51,7 @@ export interface ReviewRecord {
   reviewer: string
   reason: string
   reviewedAt: string
+  regions?: RegionSnapshot[]
 }
 
 export interface ScreenshotRun {
@@ -63,6 +86,8 @@ export interface Baseline {
   approvedAt: string
   runId: string
   active: boolean
+  adoptedRegions: RegionSnapshot[]
+  ignoredRegions: RegionSnapshot[]
 }
 
 export interface IgnoreRule {
@@ -100,6 +125,7 @@ export interface ReviewPayload {
   decision: 'approved' | 'rejected'
   reviewer: string
   reason: string
+  regions: DifferenceRegion[]
 }
 
 export interface ImportRunPayload {

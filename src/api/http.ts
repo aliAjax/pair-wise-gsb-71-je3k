@@ -1,5 +1,6 @@
 import axios, { type AxiosAdapter, type InternalAxiosRequestConfig } from 'axios'
 import { readDb, writeDb } from '@/mocks/db'
+import { applyRulesToRegions, buildRegionSnapshots, kindLabel } from '@/utils/rules'
 import type {
   Baseline,
   DashboardData,
@@ -93,10 +94,35 @@ const mockAdapter: AxiosAdapter = async (config) => {
     const payload = parseBody<ReviewPayload>(config)
     const run = db.runs.find((item) => item.id === reviewMatch[1])
     if (!run) throw new Error('运行记录不存在')
+    // 以当前启用规则为基准重新归类，命中规则的区域强制归入规则忽略
+    const resolvedRegions = applyRulesToRegions(
+      { projectId: run.projectId, page: run.page, device: run.device },
+      (payload.regions?.length ? payload.regions : run.regions).map((region) => ({ ...region })),
+      db.rules,
+    )
+    run.regions = resolvedRegions
+    const snapshots = buildRegionSnapshots(resolvedRegions, db.rules)
+
+    if (payload.decision === 'approved') {
+      const blocking = resolvedRegions.filter(
+        (region) => region.severity === 'high' && !region.ignored,
+      )
+      if (blocking.length > 0) {
+        const detail = blocking
+          .map((region) => `${kindLabel(region.kind)}（${region.x}%, ${region.y}%，${region.pixels}px）`)
+          .join('、')
+        throw new Error(`仍有 ${blocking.length} 处未处理的高风险区域：${detail}，请先判定或忽略后再批准`)
+      }
+    }
+
     run.status = payload.decision
     run.review = {
-      ...payload,
+      category: payload.category,
+      decision: payload.decision,
+      reviewer: payload.reviewer,
+      reason: payload.reason,
       reviewedAt: new Date().toISOString(),
+      regions: snapshots,
     }
     if (payload.decision === 'approved') {
       const baseline = db.baselines.find(
@@ -120,6 +146,8 @@ const mockAdapter: AxiosAdapter = async (config) => {
         approvedAt: new Date().toISOString(),
         runId: run.id,
         active: true,
+        adoptedRegions: snapshots.filter((snapshot) => snapshot.adopted),
+        ignoredRegions: snapshots.filter((snapshot) => !snapshot.adopted),
       })
     }
     writeDb(db)

@@ -20,19 +20,49 @@ const escapeCsv = (value: string | number) => `"${String(value).replace(/"/g, '"
 
 const exportCsv = () => {
   const rows = [
-    ['运行ID', '页面', '设备', '主题', '构建', '状态', '差异率', '差异区域', '审批人', '审批原因'],
-    ...(runs.value ?? []).map((run) => [
-      run.id,
-      run.page,
-      run.device,
-      run.theme,
-      run.build,
-      run.status,
-      run.mismatchRate.toFixed(2),
-      run.regions.length,
-      run.review?.reviewer ?? '',
-      run.review?.reason ?? '',
-    ]),
+    [
+      '运行ID',
+      '页面',
+      '设备',
+      '主题',
+      '构建',
+      '状态',
+      '差异率',
+      '差异区域',
+      '采用区域',
+      '人工忽略区域',
+      '规则忽略区域',
+      '审批人',
+      '审批原因',
+    ],
+    ...(runs.value ?? []).map((run) => {
+      const snapshots = run.review?.regions
+      const adopted = snapshots
+        ? snapshots.filter((snapshot) => snapshot.adopted).length
+        : run.regions.filter((region) => !region.ignored).length
+      const ignoreSources = snapshots
+        ? snapshots.filter((snapshot) => !snapshot.adopted).map((snapshot) => snapshot.ignoredBy ?? 'manual')
+        : run.regions
+            .filter((region) => region.ignored)
+            .map((region) => region.ignoredBy ?? 'manual')
+      const manualIgnored = ignoreSources.filter((source) => source === 'manual').length
+      const ruleIgnored = ignoreSources.filter((source) => source === 'rule').length
+      return [
+        run.id,
+        run.page,
+        run.device,
+        run.theme,
+        run.build,
+        run.status,
+        run.mismatchRate.toFixed(2),
+        run.regions.length,
+        adopted,
+        manualIgnored,
+        ruleIgnored,
+        run.review?.reviewer ?? '',
+        run.review?.reason ?? '',
+      ]
+    }),
   ]
   const csv = `\uFEFF${rows.map((row) => row.map(escapeCsv).join(',')).join('\n')}`
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
